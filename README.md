@@ -1,3 +1,43 @@
+# A fork with support for multiple token auth providers and a hack for gitlab support
+
+In this fork, the token auth can also be configured like this:
+
+```
+auth:
+  token:
+    multihost:
+      "registry-internal.com":
+        realm: "https://docker-authentication.in.example.com/auth"
+        service: "my.docker.registry"
+        issuer: "Acme auth server"
+        rootcertbundle: "/certs/auth_internal.crt"
+      "registry-external.com":
+        realm: "https://docker-authentication.ext.example.com/auth"
+        service: "my.docker.registry"
+        issuer: "Acme auth server"
+        rootcertbundle: "/certs/auth_external.crt"
+      "DEFAULT":
+        realm: "https://docker-authentication.in.example.com/auth"
+        service: "my.docker.registry"
+        issuer: "Acme auth server"
+        rootcertbundle: "/certs/auth_internal.crt"
+```
+
+That means: 
+
+- If the auth is `token` and the key `multihost` is set, all other fields are ignored. Instead, the map is used to associate a host name (sent in the `Host` HTTP header) with a config set. (I've chosen an extra key because otherwise the configuration parsing code has to be changed a good deal.)
+- The `DEFAULT` setting is applied if none of the host names matches an incoming request. 
+- If no host name matches and `DEFAULT`is not set, the auth handler returns an error (which becomes a `400 Bad Request` response).
+- If the `multihost` key is not present, the registry behaves as before.
+
+**Bonus Hack for gitlab**
+
+The registry looks for the file `/var/opt/gitlab/registry/multihost.yml` which must contain the `multihost: ...` piece of the config.
+If the file is present, its contents are used instead of those from the normal registry config. 
+Note that the normal config still has to contain `auth: token: ` so that the auth handler is activated.
+This feature has been added temporarily to support automatic installations and updates of gitlab where the config file is auto-generated.
+
+
 # Distribution
 
 The Docker toolset to pack, ship, store, and deliver content.

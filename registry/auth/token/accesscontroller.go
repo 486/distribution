@@ -14,6 +14,8 @@ import (
 	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/registry/auth"
 	"github.com/docker/libtrust"
+
+	"gopkg.in/yaml.v2"
 )
 
 // accessSet maps a typed, named resource to
@@ -71,6 +73,7 @@ func (s accessSet) scopeParam() string {
 var (
 	ErrInsufficientScope = errors.New("insufficient scope")
 	ErrTokenRequired     = errors.New("authorization token required")
+	ErrNoAuthForHostname = errors.New("authorization config does not match hostname")
 )
 
 // authChallenge implements the auth.Challenge interface.
@@ -133,6 +136,81 @@ type tokenAccessOptions struct {
 	issuer         string
 	service        string
 	rootCertBundle string
+}
+
+type multiHostAccessController struct {
+	hosts map[string]auth.AccessController
+}
+
+func (ac *multiHostAccessController) Authorized(ctx context.Context, accessItems ...auth.Access) (context.Context, error) {
+
+	req, err := context.GetRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	hostname := strings.ToLower(req.Host)
+	fmt.Printf("------ Host: %v\n", req.Host)
+	fmt.Printf("------ Headers: %v\n", req.Header)
+	controller, exists := ac.hosts[hostname]
+	if !exists {
+		controller, exists = ac.hosts["DEFAULT"]
+	}
+	if !exists {
+		return nil, ErrNoAuthForHostname
+	}
+
+	return controller.Authorized(ctx, accessItems...)
+}
+
+func convertToMultiHostOptions(options map[string]interface{}) (hostMap map[string]map[string]interface{}, err error) {
+	hostMap = make(map[string]map[string]interface{})
+	hosts, present := options["multihost"].(map[interface{}]interface{})
+	if !present {
+		hostMap["DEFAULT"] = options
+		return hostMap, nil
+	}
+	for key, value := range hosts {
+		hostConfig := value.(map[interface{}]interface{})
+		hostConfigCasted := make(map[string]interface{})
+		for k, v := range hostConfig {
+			hostConfigCasted[k.(string)] = v
+		}
+		hostMap[key.(string)] = hostConfigCasted
+		if err != nil {
+			return hostMap, err
+		}
+	}
+	return hostMap, nil
+}
+
+func newMultiHostAccessController(options map[string]interface{}) (auth.AccessController, error) {
+	// --- intercept here: use a special file if it exists
+	const FilePath = "/var/opt/gitlab/registry/multihost.yml"
+	file, err := ioutil.ReadFile(FilePath)
+	if err == nil {
+		var altOptions = make(map[string]interface{})
+		yaml.Unmarshal(file, &altOptions)
+		fmt.Printf("------ Using alternative token auth options: %v \n", altOptions)
+		options = altOptions
+	}
+	// ---
+
+	multiHostConfig, err := convertToMultiHostOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	hosts := make(map[string]auth.AccessController)
+	for hostname, hostconfig := range multiHostConfig {
+		controller, err := newAccessController(hostconfig)
+		if err != nil {
+			return nil, err
+		}
+		hosts[hostname] = controller
+	}
+	return &multiHostAccessController{
+		hosts: hosts,
+	}, nil
 }
 
 // checkOptions gathers the necessary options
@@ -264,5 +342,5 @@ func (ac *accessController) Authorized(ctx context.Context, accessItems ...auth.
 
 // init handles registering the token auth backend.
 func init() {
-	auth.Register("token", auth.InitFunc(newAccessController))
+	auth.Register("token", auth.InitFunc(newMultiHostAccessController))
 }
